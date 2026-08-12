@@ -167,13 +167,17 @@ function buildAutoSegments(
   return { segments, clusteredMaps };
 }
 
-// Apply a circular brush to a mask (set pixels to 255 or 0)
+// Apply a circular brush to a mask (set pixels to 255 or 0).
+// When painting (not erasing), only marks pixels that belong to segmentId in segMap.
+// When erasing, clears any painted pixel regardless of segment ownership.
 function applyBrush(
   x: number, y: number,
   mask: Uint8Array,
   erasing: boolean,
   w: number, h: number,
   radius: number,
+  segMap: SegmentationMap | null,
+  segmentId: number | null,
 ): void {
   const r2 = radius * radius;
   const x0 = Math.max(0, x - radius);
@@ -185,6 +189,9 @@ function applyBrush(
       const dx = px - x;
       const dy = py - y;
       if (dx * dx + dy * dy <= r2) {
+        if (!erasing && segMap && segmentId !== null) {
+          if (segMap.ids[py * w + px] !== segmentId) continue;
+        }
         mask[py * w + px] = erasing ? 0 : 255;
       }
     }
@@ -203,6 +210,7 @@ export function Canvas(): React.ReactElement {
   const [showGuide, setShowGuide] = useState(false);
   const [samStatus, setSamStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
   const [activeTool, setActiveTool] = useState<'paint' | 'paint-erase'>('paint');
+  const [paintAllLayers, setPaintAllLayers] = useState(false);
   const [paintMask, setPaintMask] = useState<Uint8Array | null>(null);
   const [brushSize, setBrushSize] = useState(20);
   const [isPainting, setIsPainting] = useState(false);
@@ -222,6 +230,13 @@ export function Canvas(): React.ReactElement {
   const panRef = useRef(state.panOffset);
   zoomRef.current = state.zoom;
   panRef.current = state.panOffset;
+
+  // Keep refs in sync so paint callbacks always see the latest values
+  // without being torn down on every selection/toggle change.
+  const selectedSegmentIdRef = useRef(state.selectedSegmentId);
+  selectedSegmentIdRef.current = state.selectedSegmentId;
+  const paintAllLayersRef = useRef(paintAllLayers);
+  paintAllLayersRef.current = paintAllLayers;
 
   // Report container size for fit-to-screen.
   // Must re-run when stage changes because the container div only renders
@@ -556,7 +571,7 @@ export function Canvas(): React.ReactElement {
         paintMaskRef.current = new Uint8Array(w * h);
       }
 
-      applyBrush(coords.x, coords.y, paintMaskRef.current, erasing, w, h, brushSize);
+      applyBrush(coords.x, coords.y, paintMaskRef.current, erasing, w, h, brushSize, paintAllLayersRef.current ? null : globalSegMap, paintAllLayersRef.current ? null : selectedSegmentIdRef.current);
       setPaintMask(new Uint8Array(paintMaskRef.current));
       setIsPainting(true);
       isPaintingRef.current = true;
@@ -583,7 +598,7 @@ export function Canvas(): React.ReactElement {
         const w = state.sourceImage.width;
         const h = state.sourceImage.height;
         const erasing = activeTool === 'paint-erase';
-        applyBrush(coords.x, coords.y, paintMaskRef.current, erasing, w, h, brushSize);
+        applyBrush(coords.x, coords.y, paintMaskRef.current, erasing, w, h, brushSize, paintAllLayersRef.current ? null : globalSegMap, paintAllLayersRef.current ? null : selectedSegmentIdRef.current);
         setPaintMask(new Uint8Array(paintMaskRef.current));
       }
     },
@@ -868,6 +883,20 @@ export function Canvas(): React.ReactElement {
             <span style={{ fontSize: 10, color: '#3d3b38', minWidth: 32, fontFamily: 'ui-monospace,Menlo,monospace', flexShrink: 0 }}>
               {brushSize}px
             </span>
+            <div style={{ width: 1, height: 14, background: '#e2dfda', flexShrink: 0 }} />
+            <button
+              onClick={() => setPaintAllLayers(v => !v)}
+              title={paintAllLayers ? 'Painting all segments — click to restrict to current segment' : 'Painting current segment only — click to paint across all segments'}
+              style={{
+                padding: '2px 6px', fontSize: 10, borderRadius: 4, flexShrink: 0,
+                border: `1px solid ${paintAllLayers ? '#e07800' : '#e2dfda'}`,
+                background: paintAllLayers ? '#fff4e5' : 'transparent',
+                color: paintAllLayers ? '#e07800' : '#8d8880',
+                cursor: 'pointer', fontWeight: 600,
+              }}
+            >
+              {paintAllLayers ? 'all layers' : 'this layer'}
+            </button>
           </div>
 
           {/* Guide panel */}
