@@ -1,5 +1,7 @@
 # Web Image Toon Shader
 
+**[Live demo →](https://nekopudding.github.io/web-image-toon-shader/)**
+
 A browser-based cel-shading editor. Upload a rendered illustration, 3D render, or photo and turn it into a flat, cel-shaded image — entirely on your device, nothing uploaded.
 
 ## What it does
