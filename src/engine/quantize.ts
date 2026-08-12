@@ -58,7 +58,7 @@ function kmeansppInit(pixels: Float32Array, k: number, n: number): Float32Array[
 export function kmeans(
   pixels: Float32Array,
   k: number,
-  lockedCentroids?: Float32Array[],
+  lockedCentroids?: (Float32Array | null)[],
 ): { centroids: Float32Array[]; assignments: Uint8Array } {
   const n = pixels.length / 3;
   const maxIter = 30;
@@ -76,7 +76,7 @@ export function kmeans(
   if (lockedCentroids) {
     for (let i = 0; i < lockedCentroids.length && i < k; i++) {
       if (lockedCentroids[i]) {
-        centroids[i] = new Float32Array(lockedCentroids[i]);
+        centroids[i] = new Float32Array(lockedCentroids[i]!);
       }
     }
   }
@@ -171,7 +171,7 @@ export async function quantizeSegment(
   }
 
   // Build locked centroids array
-  const locked: Float32Array[] = [];
+  const locked: (Float32Array | null)[] = [];
   if (lockedColors) {
     for (let i = 0; i < lockedColors.length; i++) {
       const lc = lockedColors[i];
@@ -179,7 +179,7 @@ export async function quantizeSegment(
         const [L, a, b] = rgbToLab(lc[0] / 255, lc[1] / 255, lc[2] / 255);
         locked.push(new Float32Array([L, a, b]));
       } else {
-        locked.push(new Float32Array(0));
+        locked.push(null);
       }
     }
   }

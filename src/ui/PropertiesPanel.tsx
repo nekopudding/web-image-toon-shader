@@ -2,15 +2,45 @@ import React, { useState } from 'react';
 import { useProjectStore } from './hooks/useProjectStore';
 import type { Cluster } from '../engine/types';
 
+function InfoTip({ text }: { text: string }): React.ReactElement {
+  return (
+    <span
+      title={text}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 14,
+        height: 14,
+        borderRadius: '50%',
+        border: '1px solid #c0bcb7',
+        fontSize: 9,
+        fontWeight: 700,
+        color: '#a9a49c',
+        cursor: 'default',
+        userSelect: 'none',
+        flexShrink: 0,
+        lineHeight: 1,
+        fontStyle: 'italic',
+      }}
+    >
+      i
+    </span>
+  );
+}
+
 function Switch({
   checked,
   onChange,
+  title,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
+  title?: string;
 }): React.ReactElement {
   return (
     <button
+      title={title}
       onClick={() => onChange(!checked)}
       style={{
         width: 36,
@@ -163,7 +193,7 @@ function ColorSwatch({
       >
         {cluster.manualColor ??
           `#${cluster.rgbColor
-            .map(v => v.toString(16).padStart(2, '0'))
+            .map(v => Math.max(0, Math.min(255, isNaN(v) ? 0 : Math.round(v))).toString(16).padStart(2, '0'))
             .join('')}`}
       </span>
 
@@ -178,9 +208,12 @@ export function PropertiesPanel(): React.ReactElement {
   const [state, dispatch] = useProjectStore();
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
+  const [showMergeConfirm, setShowMergeConfirm] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
 
   const segment = state.segments.find(s => s.id === state.selectedSegmentId) ?? null;
   const cm = segment ? state.clusteredMaps.get(segment.id) ?? null : null;
+  const isRecomputing = segment ? state.dirty.has(segment.id) : false;
 
   if (!segment) {
     return (
@@ -226,6 +259,8 @@ export function PropertiesPanel(): React.ReactElement {
       updates: { outlineSettings: { ...segment.outlineSettings, ...updates } },
     });
   };
+
+  const otherSegments = state.segments.filter(s => s.id !== segment.id);
 
   // Breadcrumb path
   const breadcrumb: string[] = [];
@@ -307,7 +342,27 @@ export function PropertiesPanel(): React.ReactElement {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {/* Color count section */}
         <div style={sectionStyle}>
-          <span style={labelStyle}>TONES</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 8 }}>
+            <span style={{ ...labelStyle, marginBottom: 0 }}>TONES</span>
+            <InfoTip text="How many distinct flat tones to quantize this segment into. 2–3 gives a classic cel-shaded look; 4–6 adds more gradation. Changes trigger a re-computation." />
+            {isRecomputing && (
+              <span
+                title="Recomputing tones…"
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 10.5,
+                  fontFamily: 'ui-monospace, Menlo, monospace',
+                  color: '#8a6800',
+                  background: '#fef6e4',
+                  padding: '1px 6px',
+                  borderRadius: 4,
+                  animation: 'pulse 1s ease-in-out infinite',
+                }}
+              >
+                computing…
+              </span>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
             <button
               onClick={() =>
@@ -316,6 +371,7 @@ export function PropertiesPanel(): React.ReactElement {
                 })
               }
               disabled={segment.colorSettings.targetColorCount <= 2}
+              title="Fewer tones"
               style={{
                 width: 28,
                 height: 28,
@@ -347,6 +403,7 @@ export function PropertiesPanel(): React.ReactElement {
                 })
               }
               disabled={segment.colorSettings.targetColorCount >= 6}
+              title="More tones"
               style={{
                 width: 28,
                 height: 28,
@@ -375,32 +432,37 @@ export function PropertiesPanel(): React.ReactElement {
         {/* Palette section */}
         {cm && cm.clusters.length > 0 && (
           <div style={sectionStyle}>
-            <span style={labelStyle}>PALETTE</span>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {[...cm.clusters]
-                .sort((a, b) => a.lightnessRank - b.lightnessRank)
-                .map(cluster => (
-                  <ColorSwatch
-                    key={cluster.id}
-                    cluster={cluster}
-                    isSelected={selectedClusterId === cluster.id}
-                    onClick={() =>
-                      setSelectedClusterId(
-                        selectedClusterId === cluster.id ? null : cluster.id,
-                      )
-                    }
-                    onLockToggle={() => {
-                      const updatedClusters = cm.clusters.map(c =>
-                        c.id === cluster.id ? { ...c, locked: !c.locked } : c,
-                      );
-                      dispatch({
-                        type: 'SET_CLUSTERED_MAP',
-                        segmentId: segment.id,
-                        map: { ...cm, clusters: updatedClusters },
-                      });
-                    }}
-                  />
-                ))}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 8 }}>
+              <span style={{ ...labelStyle, marginBottom: 0 }}>PALETTE</span>
+              <InfoTip text="The quantized colors for this segment, sorted lightest to darkest. Click a swatch to select it. Lock a color (🔒) to pin it during re-quantization so it won't move." />
+            </div>
+            <div style={{ opacity: isRecomputing ? 0.4 : 1, transition: 'opacity 0.2s', pointerEvents: isRecomputing ? 'none' : undefined }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {[...cm.clusters]
+                  .sort((a, b) => a.lightnessRank - b.lightnessRank)
+                  .map(cluster => (
+                    <ColorSwatch
+                      key={cluster.id}
+                      cluster={cluster}
+                      isSelected={selectedClusterId === cluster.id}
+                      onClick={() =>
+                        setSelectedClusterId(
+                          selectedClusterId === cluster.id ? null : cluster.id,
+                        )
+                      }
+                      onLockToggle={() => {
+                        const updatedClusters = cm.clusters.map(c =>
+                          c.id === cluster.id ? { ...c, locked: !c.locked } : c,
+                        );
+                        dispatch({
+                          type: 'SET_CLUSTERED_MAP',
+                          segmentId: segment.id,
+                          map: { ...cm, clusters: updatedClusters },
+                        });
+                      }}
+                    />
+                  ))}
+              </div>
             </div>
           </div>
         )}
@@ -412,12 +474,15 @@ export function PropertiesPanel(): React.ReactElement {
               display: 'flex',
               alignItems: 'center',
               marginBottom: 12,
+              justifyContent: 'space-between',
             }}
           >
-            <span style={{ ...labelStyle, marginBottom: 0, flex: 1 }}>OUTLINE</span>
+            <div className="flex gap-1 items-center"><span style={{ ...labelStyle, marginBottom: 0 }}>OUTLINE</span>
+            <InfoTip text="Draw a stroke around this segment's boundary. Toggle off to hide it." /></div>
             <Switch
               checked={segment.outlineSettings.visible}
               onChange={v => updateOutlineSettings({ visible: v })}
+              title="Toggle outline visibility"
             />
           </div>
 
@@ -431,7 +496,7 @@ export function PropertiesPanel(): React.ReactElement {
                     marginBottom: 4,
                   }}
                 >
-                  <span style={{ fontSize: 12, color: '#6f6b65' }}>Width</span>
+                  <span style={{ fontSize: 12, color: '#6f6b65' }} title="Stroke thickness in image pixels">Width</span>
                   <span
                     style={{
                       fontSize: 12,
@@ -452,7 +517,7 @@ export function PropertiesPanel(): React.ReactElement {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 12, color: '#6f6b65', flex: 1 }}>Color</span>
+                <span style={{ fontSize: 12, color: '#6f6b65', flex: 1 }} title="Outline stroke color">Color</span>
                 <input
                   type="color"
                   value={segment.outlineSettings.strokeColor}
@@ -506,9 +571,10 @@ export function PropertiesPanel(): React.ReactElement {
             <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 14 }}>
               {/* Color space toggle */}
               <div>
-                <span style={{ fontSize: 12, color: '#6f6b65', display: 'block', marginBottom: 6 }}>
-                  Color space
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: '#6f6b65' }}>Color space</span>
+                  <InfoTip text="LAB clusters colors perceptually (recommended — matches how humans see lightness). RGB clusters by raw channel values and can produce muddy mid-tones." />
+                </div>
                 <div
                   style={{
                     display: 'flex',
@@ -555,7 +621,7 @@ export function PropertiesPanel(): React.ReactElement {
                     marginBottom: 4,
                   }}
                 >
-                  <span style={{ fontSize: 12, color: '#6f6b65' }}>Smoothing</span>
+                  <span style={{ fontSize: 12, color: '#6f6b65' }} title="Applies a mode filter to reduce noise and speckles in the tone regions. Higher = smoother boundaries but may lose fine detail.">Smoothing</span>
                   <span
                     style={{
                       fontSize: 12,
@@ -578,25 +644,69 @@ export function PropertiesPanel(): React.ReactElement {
           )}
         </div>
 
-        {/* Delete segment button */}
+        {/* Delete / merge segment */}
         <div style={{ padding: '8px 16px 16px' }}>
-          <button
-            onClick={() => dispatch({ type: 'DELETE_SEGMENT', segmentId: segment.id })}
-            style={{
-              width: '100%',
-              padding: '7px 0',
-              fontSize: 13,
-              border: '1px solid #f0c4c4',
-              background: '#fff',
-              color: '#c0392b',
-              borderRadius: 6,
-              cursor: 'pointer',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#fff5f5'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
-          >
-            Delete segment
-          </button>
+          {showMergeConfirm ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 12, color: '#6f6b65' }}>Merge pixels into:</span>
+              {otherSegments.length === 0 ? (
+                <p style={{ fontSize: 12, color: '#8d8880', margin: 0 }}>
+                  No other segments — pixels will become unassigned.
+                </p>
+              ) : (
+                <select
+                  value={mergeTargetId ?? ''}
+                  onChange={e => setMergeTargetId(Number(e.target.value))}
+                  style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2dfda', background: '#fff' }}
+                >
+                  <option value="" disabled>Choose segment…</option>
+                  {otherSegments.map(s => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </select>
+              )}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={() => {
+                    if (otherSegments.length > 0 && mergeTargetId !== null) {
+                      dispatch({ type: 'REQUEST_MERGE', fromId: segment.id, toId: mergeTargetId });
+                    } else {
+                      dispatch({ type: 'DELETE_SEGMENT', segmentId: segment.id });
+                    }
+                    setShowMergeConfirm(false);
+                  }}
+                  disabled={otherSegments.length > 0 && mergeTargetId === null}
+                  style={{ flex: 1, padding: '7px 0', fontSize: 13, border: 'none', background: '#c0392b', color: '#fff', borderRadius: 6, cursor: 'pointer' }}
+                >
+                  {otherSegments.length > 0 ? 'Merge & Delete' : 'Delete'}
+                </button>
+                <button
+                  onClick={() => setShowMergeConfirm(false)}
+                  style={{ padding: '7px 12px', fontSize: 13, border: '1px solid #e2dfda', background: '#fff', borderRadius: 6, cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => { setShowMergeConfirm(true); setMergeTargetId(null); }}
+              style={{
+                width: '100%',
+                padding: '7px 0',
+                fontSize: 13,
+                border: '1px solid #f0c4c4',
+                background: '#fff',
+                color: '#c0392b',
+                borderRadius: 6,
+                cursor: 'pointer',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#fff5f5'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+            >
+              Delete segment
+            </button>
+          )}
         </div>
       </div>
     </aside>

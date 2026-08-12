@@ -76,7 +76,7 @@ self.onmessage = (evt: MessageEvent<QuantizeInput>) => {
   }
 
   // Build locked centroids
-  const locked: Float32Array[] = [];
+  const locked: (Float32Array | null)[] = [];
   for (const lc of lockedColors) {
     if (lc) {
       if (settings.colorSpace === 'lab') {
@@ -86,7 +86,7 @@ self.onmessage = (evt: MessageEvent<QuantizeInput>) => {
         locked.push(new Float32Array([lc[0] / 255 * 100, lc[1] / 255 * 100, lc[2] / 255 * 100]));
       }
     } else {
-      locked.push(new Float32Array(0));
+      locked.push(null);
     }
   }
 
@@ -111,6 +111,17 @@ self.onmessage = (evt: MessageEvent<QuantizeInput>) => {
     clusterIds = modeFilter(clusterIds, bboxW, bboxH, smoothPasses);
   }
   clusterIds = removeSmallRegions(clusterIds, bboxW, bboxH, 10);
+
+  // Mask non-segment pixels with sentinel 255. Uint8Array is zero-initialised,
+  // so pixels that were never assigned (outside this segment's area within the bbox)
+  // would otherwise land on cluster id=0 and get painted with that cluster's color.
+  for (let i = 0; i < bboxW * bboxH; i++) {
+    const globalX = bbox.x + (i % bboxW);
+    const globalY = bbox.y + Math.floor(i / bboxW);
+    if (segMap[globalY * imageWidth + globalX] !== segmentId) {
+      clusterIds[i] = 255;
+    }
+  }
 
   // Build cluster objects
   const clusterList = centroids.map((c, idx) => ({ idx, L: c[0], centroid: c }));

@@ -29,7 +29,18 @@ export function TopBar(): React.ReactElement {
   };
 
   const fitToScreen = () => {
-    dispatch({ type: 'SET_ZOOM', zoom: 1 });
+    const container = state.canvasContainerSize;
+    const img = state.sourceImage;
+    if (!container || !img) {
+      dispatch({ type: 'SET_ZOOM_AND_PAN', zoom: 1, panX: 0, panY: 0 });
+      return;
+    }
+    const PADDING = 48;
+    const scaleX = (container.w - PADDING) / img.width;
+    const scaleY = (container.h - PADDING) / img.height;
+    const fit = Math.min(scaleX, scaleY, 4);
+    // Reset pan to 0 so the image recentres when fitting
+    dispatch({ type: 'SET_ZOOM_AND_PAN', zoom: Math.round(fit * 100) / 100, panX: 0, panY: 0 });
   };
 
   return (

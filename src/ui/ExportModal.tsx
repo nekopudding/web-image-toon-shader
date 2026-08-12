@@ -30,7 +30,7 @@ export function ExportModal(): React.ReactElement | null {
       state.contourPaths,
       'result',
     );
-  }, [sourceImage, state.segments, state.clusteredMaps, state.contourPaths]);
+  }, [sourceImage, state.segments, state.clusteredMaps, state.contourPaths, state.exportOpen]);
 
   if (!state.exportOpen) return null;
 

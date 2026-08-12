@@ -20,12 +20,14 @@ export interface ProjectState {
   pendingMask: Uint8Array | null;
   embeddingProgress: number | null; // 0-1 or null
   zoom: number;
+  panOffset: { x: number; y: number };
   filename: string;
   exportOpen: boolean;
   dirty: Set<number>; // segment ids needing recompute
   history: SnapshotState[];
   historyIndex: number;
   canvasContainerSize: { w: number; h: number } | null;
+  mergePending: { fromId: number; toId: number } | null;
 }
 
 // Serializable snapshot (no circular refs)
@@ -55,11 +57,14 @@ export type ProjectAction =
   | { type: 'SET_CLUSTERED_MAP'; segmentId: number; map: ClusteredMap }
   | { type: 'SET_CONTOUR_PATHS'; segmentId: number; paths: ContourPath[] }
   | { type: 'SET_ZOOM'; zoom: number }
+  | { type: 'SET_ZOOM_AND_PAN'; zoom: number; panX: number; panY: number }
   | { type: 'SET_FILENAME'; filename: string }
   | { type: 'SET_EXPORT_OPEN'; open: boolean }
   | { type: 'MARK_DIRTY'; segmentId: number }
   | { type: 'CLEAR_DIRTY'; segmentId: number }
   | { type: 'SET_CONTAINER_SIZE'; w: number; h: number }
+  | { type: 'REQUEST_MERGE'; fromId: number; toId: number }
+  | { type: 'CLEAR_MERGE_PENDING' }
   | { type: 'UNDO' }
   | { type: 'REDO' };
 
@@ -78,12 +83,14 @@ function createInitialState(): ProjectState {
     pendingMask: null,
     embeddingProgress: null,
     zoom: 1,
+    panOffset: { x: 0, y: 0 },
     filename: 'untitled',
     exportOpen: false,
     dirty: new Set(),
     history: [],
     historyIndex: -1,
     canvasContainerSize: null,
+    mergePending: null,
   };
 }
 
@@ -251,7 +258,12 @@ export class ProjectStore {
       }
 
       case 'SELECT_SEGMENT': {
-        this.state = { ...this.state, selectedSegmentId: action.segmentId };
+        this.state = {
+          ...this.state,
+          selectedSegmentId: action.segmentId,
+          pendingPoints: [],
+          pendingMask: null,
+        };
         break;
       }
 
@@ -271,6 +283,15 @@ export class ProjectStore {
 
       case 'SET_ZOOM': {
         this.state = { ...this.state, zoom: action.zoom };
+        break;
+      }
+
+      case 'SET_ZOOM_AND_PAN': {
+        this.state = {
+          ...this.state,
+          zoom: action.zoom,
+          panOffset: { x: action.panX, y: action.panY },
+        };
         break;
       }
 
@@ -303,6 +324,16 @@ export class ProjectStore {
         const newDirty = new Set(this.state.dirty);
         newDirty.delete(action.segmentId);
         this.state = { ...this.state, dirty: newDirty };
+        break;
+      }
+
+      case 'REQUEST_MERGE': {
+        this.state = { ...this.state, mergePending: { fromId: action.fromId, toId: action.toId } };
+        break;
+      }
+
+      case 'CLEAR_MERGE_PENDING': {
+        this.state = { ...this.state, mergePending: null };
         break;
       }
 

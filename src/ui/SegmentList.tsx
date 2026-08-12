@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useProjectStore } from './hooks/useProjectStore';
-import type { Segment } from '../engine/types';
+import type { Segment, ClusteredMap } from '../engine/types';
 
 const TINT_COLORS = [
   '#3d6fd6', '#d65d3d', '#3dd65d', '#d63d9e',
@@ -11,7 +11,7 @@ function getSegmentColor(segmentId: number): string {
   return TINT_COLORS[segmentId % TINT_COLORS.length];
 }
 
-function getToneCount(segment: Segment, clusteredMaps: Map<number, import('../engine/types').ClusteredMap>): number {
+function getToneCount(segment: Segment, clusteredMaps: Map<number, ClusteredMap>): number {
   const cm = clusteredMaps.get(segment.id);
   return cm ? cm.clusters.length : segment.colorSettings.targetColorCount;
 }
@@ -134,31 +134,6 @@ export function SegmentList(): React.ReactElement {
   const topLevel = state.segments.filter(s => s.parentId === null);
   const childrenOf = (id: number) => state.segments.filter(s => s.parentId === id);
 
-  const nextId = () => Math.max(0, ...state.segments.map(s => s.id)) + 1;
-
-  const addSegment = () => {
-    const id = nextId();
-    const segment: Segment = {
-      id,
-      parentId: state.selectedSegmentId ?? null,
-      label: `Segment ${id}`,
-      promptPoints: [],
-      boundingBox: { x: 0, y: 0, width: 0, height: 0 },
-      colorSettings: {
-        targetColorCount: 3,
-        colorSpace: 'lab',
-        smoothing: 0.5,
-      },
-      outlineSettings: {
-        visible: true,
-        strokeWidth: 1.5,
-        strokeColor: '#000000',
-      },
-      visible: true,
-    };
-    dispatch({ type: 'ADD_SEGMENT', segment });
-  };
-
   const toggleCollapse = (id: number) => {
     const next = new Set(collapsed);
     if (next.has(id)) next.delete(id);
@@ -201,27 +176,6 @@ export function SegmentList(): React.ReactElement {
         >
           SEGMENTS
         </span>
-        <button
-          onClick={addSegment}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-            padding: '4px 10px',
-            fontSize: 13,
-            fontWeight: 500,
-            border: '1px solid #e2dfda',
-            background: '#fff',
-            borderRadius: 6,
-            cursor: 'pointer',
-            color: '#2b2a28',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = '#f1efec'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
-        >
-          <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
-          New
-        </button>
       </div>
 
       {/* Segment list */}

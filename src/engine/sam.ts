@@ -118,12 +118,41 @@ export async function decodeMask(
 
   if (!masks || !masks[0]) return null;
 
-  // Pick the first mask (batch index 0, mask index 0)
-  const mask2d = masks[0][0];
-  const result = new Uint8Array(mask2d.length);
-  for (let i = 0; i < mask2d.length; i++) {
-    result[i] = mask2d[i] ? 255 : 0;
+  // post_process_masks may return either boolean[][] (2D, rows × cols)
+  // or a flat boolean[] depending on the transformers.js version.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawMask: any = masks[0][0];
+  if (!rawMask || rawMask.length === 0) return null;
+
+  let result: Uint8Array;
+
+  if (Array.isArray(rawMask[0])) {
+    // 2D: boolean[][] — iterate rows then columns
+    const rows = rawMask as boolean[][];
+    const h = rows.length;
+    const w = rows[0].length;
+    if (h === 0 || w === 0) return null;
+    result = new Uint8Array(h * w);
+    for (let y = 0; y < h; y++) {
+      const row = rows[y];
+      for (let x = 0; x < row.length; x++) {
+        result[y * w + x] = row[x] ? 255 : 0;
+      }
+    }
+  } else {
+    // Flat: boolean[] — pixels in row-major order
+    const flat = rawMask as boolean[];
+    result = new Uint8Array(flat.length);
+    for (let i = 0; i < flat.length; i++) {
+      result[i] = flat[i] ? 255 : 0;
+    }
   }
+
+  if (result.every(v => v === 0)) {
+    console.warn('[SAM] Mask decoded but all pixels are zero — try clicking a more distinct area');
+    return null;
+  }
+
   return result;
 }
 

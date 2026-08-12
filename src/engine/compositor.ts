@@ -39,27 +39,37 @@ export function renderToCanvas(
   }
 
   if (viewMode === 'segments') {
-    // Draw source image
+    // Draw source image dimmed so segment overlays stand out clearly
     const copy = new Uint8ClampedArray(sourceImage.data);
     const imgData = new ImageData(copy, sourceImage.width, sourceImage.height);
     ctx.putImageData(imgData, 0, 0);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillRect(0, 0, sourceImage.width, sourceImage.height);
 
-    // Draw tint overlays
+    // Draw solid segment fills (offscreen canvas → drawImage to avoid clobbering)
     for (const segment of segments) {
       if (!segment.visible) continue;
 
       const [tr, tg, tb] = getTintColor(segment.id);
       const cm = clusteredMaps.get(segment.id);
 
-      if (cm) {
-        const overlay = ctx.createImageData(cm.bbox.width, cm.bbox.height);
+      if (cm && cm.bbox.width > 0 && cm.bbox.height > 0) {
+        const offscreen = document.createElement('canvas');
+        offscreen.width = cm.bbox.width;
+        offscreen.height = cm.bbox.height;
+        const offCtx = offscreen.getContext('2d');
+        if (!offCtx) continue;
+        const overlay = offCtx.createImageData(cm.bbox.width, cm.bbox.height);
         for (let i = 0; i < cm.clusterIds.length; i++) {
+          // Only fill pixels that belong to a cluster (non-255 sentinel)
+          if (cm.clusterIds[i] === 255) continue;
           overlay.data[i * 4] = tr;
           overlay.data[i * 4 + 1] = tg;
           overlay.data[i * 4 + 2] = tb;
-          overlay.data[i * 4 + 3] = 100;
+          overlay.data[i * 4 + 3] = 210;
         }
-        ctx.putImageData(overlay, cm.bbox.x, cm.bbox.y);
+        offCtx.putImageData(overlay, 0, 0);
+        ctx.drawImage(offscreen, cm.bbox.x, cm.bbox.y);
       }
 
       // Draw outlines
@@ -91,19 +101,26 @@ export function renderToCanvas(
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, sourceImage.width, sourceImage.height);
 
-    // Fill each segment's pixels with cluster colors
+    // Each segment is composited via a per-segment offscreen canvas so that
+    // transparent (non-member) pixels don't clobber previously rendered segments.
     for (const segment of segments) {
       if (!segment.visible) continue;
 
       const cm = clusteredMaps.get(segment.id);
-      if (!cm) continue;
+      if (!cm || cm.bbox.width <= 0 || cm.bbox.height <= 0) continue;
 
-      const overlay = ctx.createImageData(cm.bbox.width, cm.bbox.height);
+      // Build segment overlay on an offscreen canvas
+      const offscreen = document.createElement('canvas');
+      offscreen.width = cm.bbox.width;
+      offscreen.height = cm.bbox.height;
+      const offCtx = offscreen.getContext('2d');
+      if (!offCtx) continue;
+
+      const overlay = offCtx.createImageData(cm.bbox.width, cm.bbox.height);
 
       for (let i = 0; i < cm.clusterIds.length; i++) {
         const clusterId = cm.clusterIds[i];
         const cluster = cm.clusters.find(c => c.id === clusterId);
-
         if (!cluster) continue;
 
         let r: number, g: number, b: number;
@@ -122,7 +139,9 @@ export function renderToCanvas(
         overlay.data[i * 4 + 3] = 255;
       }
 
-      ctx.putImageData(overlay, cm.bbox.x, cm.bbox.y);
+      offCtx.putImageData(overlay, 0, 0);
+      // drawImage uses source-over compositing — transparent pixels are no-ops
+      ctx.drawImage(offscreen, cm.bbox.x, cm.bbox.y);
     }
 
     // Draw outlines on top
