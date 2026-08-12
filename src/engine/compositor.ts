@@ -88,7 +88,11 @@ export function renderToCanvas(
           for (let i = 1; i < path.points.length; i++) {
             ctx.lineTo(path.points[i].x, path.points[i].y);
           }
-          ctx.closePath();
+          const first = path.points[0];
+          const last = path.points[path.points.length - 1];
+          const dx = last.x - first.x;
+          const dy = last.y - first.y;
+          if (dx * dx + dy * dy < 4) ctx.closePath();
           ctx.stroke();
         }
       }
@@ -162,7 +166,15 @@ export function renderToCanvas(
         for (let i = 1; i < path.points.length; i++) {
           ctx.lineTo(path.points[i].x, path.points[i].y);
         }
-        if (path.type === 'segment-boundary') ctx.closePath();
+        // Only close the path if the chain actually forms a loop — if start and end
+        // are far apart the chain is open and closePath() would draw a stray straight line.
+        if (path.type === 'segment-boundary') {
+          const first = path.points[0];
+          const last = path.points[path.points.length - 1];
+          const dx = last.x - first.x;
+          const dy = last.y - first.y;
+          if (dx * dx + dy * dy < 4) ctx.closePath(); // within 2px
+        }
         ctx.stroke();
       }
     }
