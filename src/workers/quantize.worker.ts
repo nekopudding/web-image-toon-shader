@@ -1,7 +1,5 @@
-import type { BBox, Segment, Cluster, ContourPath } from '../engine/types';
+import type { BBox, Segment, Cluster } from '../engine/types';
 import { kmeans } from '../engine/quantize';
-import { modeFilter, removeSmallRegions } from '../engine/cleanup';
-import { traceContours, simplifyPath } from '../engine/contours';
 import { rgbToLab, labToRgb } from '../engine/color-space';
 
 interface QuantizeInput {
@@ -18,9 +16,8 @@ interface QuantizeInput {
 
 interface QuantizeOutput {
   type: 'done';
-  clusterIds: ArrayBuffer;
+  clusterIds: ArrayBuffer; // raw k-means assignments, no smoothing or sentinel masking
   clusters: Cluster[];
-  contours: ContourPath[];
 }
 
 self.onmessage = (evt: MessageEvent<QuantizeInput>) => {
@@ -30,7 +27,6 @@ self.onmessage = (evt: MessageEvent<QuantizeInput>) => {
   const {
     imageData,
     width: imageWidth,
-    height: imageHeight,
     segmentIds,
     segmentId,
     bbox,
@@ -105,24 +101,6 @@ self.onmessage = (evt: MessageEvent<QuantizeInput>) => {
     clusterIds[localY * bboxW + localX] = assignments[i];
   }
 
-  // Cleanup
-  const smoothPasses = Math.round(settings.smoothing * 3);
-  if (smoothPasses > 0) {
-    clusterIds = modeFilter(clusterIds, bboxW, bboxH, smoothPasses);
-  }
-  clusterIds = removeSmallRegions(clusterIds, bboxW, bboxH, 10);
-
-  // Mask non-segment pixels with sentinel 255. Uint8Array is zero-initialised,
-  // so pixels that were never assigned (outside this segment's area within the bbox)
-  // would otherwise land on cluster id=0 and get painted with that cluster's color.
-  for (let i = 0; i < bboxW * bboxH; i++) {
-    const globalX = bbox.x + (i % bboxW);
-    const globalY = bbox.y + Math.floor(i / bboxW);
-    if (segMap[globalY * imageWidth + globalX] !== segmentId) {
-      clusterIds[i] = 255;
-    }
-  }
-
   // Build cluster objects
   const clusterList = centroids.map((c, idx) => ({ idx, L: c[0], centroid: c }));
   clusterList.sort((a, b) => b.L - a.L);
@@ -149,53 +127,10 @@ self.onmessage = (evt: MessageEvent<QuantizeInput>) => {
     };
   });
 
-  // Extract contours
-  const contours: ContourPath[] = [];
-
-  // Segment boundary
-  const segBinaryField = new Uint8Array(bboxW * bboxH);
-  for (let i = 0; i < segBinaryField.length; i++) {
-    const globalX = bbox.x + (i % bboxW);
-    const globalY = bbox.y + Math.floor(i / bboxW);
-    segBinaryField[i] = segMap[globalY * imageWidth + globalX] === segmentId ? 1 : 0;
-  }
-
-  const boundaryChains = traceContours(segBinaryField, bboxW, bboxH, bbox.x, bbox.y);
-  for (const chain of boundaryChains) {
-    contours.push({
-      points: simplifyPath(chain, 0.8),
-      type: 'segment-boundary',
-      segmentId,
-    });
-  }
-
-  // Shade boundaries
-  for (const cluster of clusters) {
-    const field = new Uint8Array(bboxW * bboxH);
-    for (let i = 0; i < clusterIds.length; i++) {
-      const globalX = bbox.x + (i % bboxW);
-      const globalY = bbox.y + Math.floor(i / bboxW);
-      if (segMap[globalY * imageWidth + globalX] === segmentId && clusterIds[i] === cluster.id) {
-        field[i] = 1;
-      }
-    }
-
-    const shadeChains = traceContours(field, bboxW, bboxH, bbox.x, bbox.y);
-    for (const chain of shadeChains) {
-      contours.push({
-        points: simplifyPath(chain, 0.8),
-        type: 'shade-boundary',
-        segmentId,
-        clusterId: cluster.id,
-      });
-    }
-  }
-
   const output: QuantizeOutput = {
     type: 'done',
     clusterIds: clusterIds.buffer,
     clusters,
-    contours,
   };
 
   self.postMessage(output, { transfer: [clusterIds.buffer] });

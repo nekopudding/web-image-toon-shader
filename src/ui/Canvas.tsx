@@ -5,6 +5,9 @@ import { loadModel, computeEmbedding, clearSamSession } from '../engine/sam';
 import { SegmentationMap } from '../engine/segmentation-map';
 import { kmeans } from '../engine/quantize';
 import { rgbToLab, labToRgb } from '../engine/color-space';
+import { modeFilter, removeSmallRegions } from '../engine/cleanup';
+import { traceContours, simplifyPath } from '../engine/contours';
+import type { ProjectAction } from '../store/project-store';
 import type { SourceImage, Segment, BBox, Cluster, ClusteredMap, ContourPath } from '../engine/types';
 
 const CHECKER_STYLE: React.CSSProperties = {
@@ -150,7 +153,8 @@ function buildAutoSegments(
       label: roleLabels[rank] ?? `Region ${segId}`,
       promptPoints: [],
       boundingBox: bbox,
-      colorSettings: { targetColorCount: 3, colorSpace: 'lab', smoothing: 0.5 },
+      colorSettings: { targetColorCount: 3, colorSpace: 'lab' },
+      smoothing: 0.5,
       outlineSettings: { visible: true, strokeWidth: 1.5, strokeColor: '#2b2a28' },
       visible: true,
     };
@@ -198,6 +202,76 @@ function applyBrush(
   }
 }
 
+// Apply smoothing + cleanup + sentinel masking + contour tracing synchronously on the main thread.
+// rawClusterIds: output of k-means worker (unsmoothed, non-segment pixels = 0).
+// Returns dispatches SET_CLUSTERED_MAP and SET_CONTOUR_PATHS for the segment.
+function applySmoothing(
+  segmentId: number,
+  rawClusterIds: Uint8Array,
+  clusters: Cluster[],
+  bbox: BBox,
+  smoothing: number,
+  segMap: SegmentationMap,
+  imageWidth: number,
+  dispatch: (action: ProjectAction) => void,
+): void {
+  const bboxW = bbox.width;
+  const bboxH = bbox.height;
+
+  let clusterIds = rawClusterIds.slice(0) as Uint8Array<ArrayBuffer>;
+
+  // Apply mode filter (smoothing)
+  const smoothPasses = Math.round(smoothing * 3);
+  if (smoothPasses > 0) {
+    clusterIds = modeFilter(clusterIds, bboxW, bboxH, smoothPasses);
+  }
+  clusterIds = removeSmallRegions(clusterIds, bboxW, bboxH, 10);
+
+  // Build contours BEFORE sentinel masking (need actual cluster ids for shade boundaries)
+  const contours: ContourPath[] = [];
+
+  // Segment boundary
+  const segBinaryField = new Uint8Array(bboxW * bboxH);
+  for (let i = 0; i < segBinaryField.length; i++) {
+    const globalX = bbox.x + (i % bboxW);
+    const globalY = bbox.y + Math.floor(i / bboxW);
+    segBinaryField[i] = segMap.ids[globalY * imageWidth + globalX] === segmentId ? 1 : 0;
+  }
+  const boundaryChains = traceContours(segBinaryField, bboxW, bboxH, bbox.x, bbox.y);
+  for (const chain of boundaryChains) {
+    contours.push({ points: simplifyPath(chain, 0.8), type: 'segment-boundary', segmentId });
+  }
+
+  // Shade boundaries
+  for (const cluster of clusters) {
+    const field = new Uint8Array(bboxW * bboxH);
+    for (let i = 0; i < clusterIds.length; i++) {
+      const globalX = bbox.x + (i % bboxW);
+      const globalY = bbox.y + Math.floor(i / bboxW);
+      if (segMap.ids[globalY * imageWidth + globalX] === segmentId && clusterIds[i] === cluster.id) {
+        field[i] = 1;
+      }
+    }
+    const shadeChains = traceContours(field, bboxW, bboxH, bbox.x, bbox.y);
+    for (const chain of shadeChains) {
+      contours.push({ points: simplifyPath(chain, 0.8), type: 'shade-boundary', segmentId, clusterId: cluster.id });
+    }
+  }
+
+  // Sentinel masking: mark non-segment pixels as 255 so compositor skips them
+  for (let i = 0; i < bboxW * bboxH; i++) {
+    const globalX = bbox.x + (i % bboxW);
+    const globalY = bbox.y + Math.floor(i / bboxW);
+    if (segMap.ids[globalY * imageWidth + globalX] !== segmentId) {
+      clusterIds[i] = 255;
+    }
+  }
+
+  const newMap: ClusteredMap = { segmentId, bbox, clusterIds, clusters };
+  dispatch({ type: 'SET_CLUSTERED_MAP', segmentId, map: newMap });
+  dispatch({ type: 'SET_CONTOUR_PATHS', segmentId, paths: contours });
+}
+
 export function Canvas(): React.ReactElement {
   const [state, dispatch] = useProjectStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -222,10 +296,10 @@ export function Canvas(): React.ReactElement {
   // Tracks in-flight quantize workers by segmentId so we cancel stale runs
   // when settings change mid-computation (e.g. slider dragging).
   const quantizeWorkersRef = useRef<Map<number, Worker>>(new Map());
-  // Cache of completed quantizations keyed by segmentId → colorSettingsKey → result.
-  // Allows instant restore when the user returns to previously-computed settings.
+  // Cache of raw k-means results keyed by segmentId → colorSettingsKey → raw result.
+  // Smoothing is NOT part of the cache key — it's applied on the main thread after retrieval.
   // Cleared per-segment when the underlying pixel mask changes (merge, paint, new image).
-  const quantizeCacheRef = useRef<Map<number, Map<string, { map: ClusteredMap; contours: ContourPath[] }>>>(new Map());
+  const quantizeCacheRef = useRef<Map<number, Map<string, { rawClusterIds: Uint8Array; clusters: Cluster[]; bbox: BBox }>>>(new Map());
   // Ref mirror of clusteredMaps so the dirty effect can read lockedColors without
   // taking clusteredMaps as a dep — which would restart all in-flight workers every
   // time any single worker finishes and dispatches SET_CLUSTERED_MAP.
@@ -369,14 +443,13 @@ export function Canvas(): React.ReactElement {
       const segment = state.segments.find(s => s.id === segmentId);
       if (!segment) { dispatch({ type: 'CLEAR_DIRTY', segmentId }); continue; }
 
-      const cacheKey = `${segment.colorSettings.targetColorCount}:${segment.colorSettings.colorSpace}:${segment.colorSettings.smoothing}`;
+      const cacheKey = `${segment.colorSettings.targetColorCount}:${segment.colorSettings.colorSpace}`;
       const segCache = quantizeCacheRef.current.get(segmentId);
 
       if (!state.forceRecompute.has(segmentId) && segCache?.has(cacheKey)) {
-        // Cache hit — restore immediately, no worker needed
+        // Cache hit — re-apply smoothing on main thread, no k-means worker needed
         const cached = segCache.get(cacheKey)!;
-        dispatch({ type: 'SET_CLUSTERED_MAP', segmentId, map: cached.map });
-        dispatch({ type: 'SET_CONTOUR_PATHS', segmentId, paths: cached.contours });
+        applySmoothing(segmentId, cached.rawClusterIds, cached.clusters, cached.bbox, segment.smoothing, globalSegMap!, state.sourceImage!.width, dispatch);
         dispatch({ type: 'CLEAR_DIRTY', segmentId });
         continue;
       }
@@ -399,15 +472,17 @@ export function Canvas(): React.ReactElement {
 
       worker.onmessage = (evt) => {
         quantizeWorkersRef.current.delete(segmentId);
-        const { clusterIds, clusters, contours } = evt.data;
-        const newMap: ClusteredMap = { segmentId, bbox: segment.boundingBox, clusterIds: new Uint8Array(clusterIds), clusters };
-        // Store in cache for instant restore if user returns to this colorSettings
+        const { clusterIds: rawBuf, clusters } = evt.data;
+        const rawClusterIds = new Uint8Array(rawBuf);
+        // Store raw result in cache (keyed without smoothing — smoothing is applied separately)
         if (!quantizeCacheRef.current.has(segmentId)) {
           quantizeCacheRef.current.set(segmentId, new Map());
         }
-        quantizeCacheRef.current.get(segmentId)!.set(cacheKey, { map: newMap, contours });
-        dispatch({ type: 'SET_CLUSTERED_MAP', segmentId, map: newMap });
-        dispatch({ type: 'SET_CONTOUR_PATHS', segmentId, paths: contours });
+        quantizeCacheRef.current.get(segmentId)!.set(cacheKey, { rawClusterIds, clusters, bbox: segment.boundingBox });
+        // Apply smoothing synchronously on main thread
+        if (globalSegMap && state.sourceImage) {
+          applySmoothing(segmentId, rawClusterIds, clusters, segment.boundingBox, segment.smoothing, globalSegMap, state.sourceImage.width, dispatch);
+        }
         dispatch({ type: 'CLEAR_DIRTY', segmentId });
         worker.terminate();
       };
@@ -436,6 +511,28 @@ export function Canvas(): React.ReactElement {
       );
     }
   }, [state.dirty, state.forceRecompute, state.segments, state.sourceImage, dispatch]);
+
+  // Re-apply smoothing for any segment where only the smoothing value changed.
+  // Reads raw k-means result from cache — no worker needed.
+  useEffect(() => {
+    if (!state.sourceImage || !globalSegMap || state.smoothDirty.size === 0) return;
+
+    for (const segmentId of state.smoothDirty) {
+      const segment = state.segments.find(s => s.id === segmentId);
+      if (!segment) { dispatch({ type: 'CLEAR_SMOOTH_DIRTY', segmentId }); continue; }
+
+      const cacheKey = `${segment.colorSettings.targetColorCount}:${segment.colorSettings.colorSpace}`;
+      const cached = quantizeCacheRef.current.get(segmentId)?.get(cacheKey);
+      if (!cached) {
+        // No cached raw result yet — k-means hasn't run, nothing to do
+        dispatch({ type: 'CLEAR_SMOOTH_DIRTY', segmentId });
+        continue;
+      }
+
+      applySmoothing(segmentId, cached.rawClusterIds, cached.clusters, cached.bbox, segment.smoothing, globalSegMap, state.sourceImage.width, dispatch);
+      dispatch({ type: 'CLEAR_SMOOTH_DIRTY', segmentId });
+    }
+  }, [state.smoothDirty, state.segments, state.sourceImage, dispatch]);
 
   // Resegment effect: re-run buildAutoSegments when REQUEST_RESEGMENT is dispatched.
   // Replaces all segments and their initial clusteredMaps but does NOT mark dirty,
@@ -702,7 +799,8 @@ export function Canvas(): React.ReactElement {
         id: nextId, parentId: null, label: `Segment ${nextId}`,
         promptPoints: [],
         boundingBox: bbox,
-        colorSettings: { targetColorCount: 3, colorSpace: 'lab', smoothing: 0.5 },
+        colorSettings: { targetColorCount: 3, colorSpace: 'lab' },
+        smoothing: 0.5,
         outlineSettings: { visible: true, strokeWidth: 1.5, strokeColor: '#2b2a28' },
         visible: true,
       };

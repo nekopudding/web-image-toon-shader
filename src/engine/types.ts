@@ -27,8 +27,8 @@ export interface Segment {
   colorSettings: {
     targetColorCount: number; // 2-6
     colorSpace: 'lab' | 'rgb';
-    smoothing: number; // 0-1
   };
+  smoothing: number; // 0-1, applied post-k-means on main thread
   outlineSettings: {
     visible: boolean;
     strokeWidth: number;

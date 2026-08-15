@@ -739,15 +739,15 @@ export function PropertiesPanel(): React.ReactElement {
                       color: '#8d8880',
                     }}
                   >
-                    {Math.round(segment.colorSettings.smoothing * 100)}%
+                    {Math.round(segment.smoothing * 100)}%
                   </span>
                 </div>
                 <Slider
-                  value={segment.colorSettings.smoothing}
+                  value={segment.smoothing}
                   min={0}
                   max={1}
                   step={0.05}
-                  onChange={v => updateColorSettings({ smoothing: v })}
+                  onChange={v => dispatch({ type: 'UPDATE_SEGMENT', segmentId: segment.id, updates: { smoothing: v } })}
                 />
               </div>
             </div>

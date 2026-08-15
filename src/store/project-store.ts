@@ -23,8 +23,9 @@ export interface ProjectState {
   panOffset: { x: number; y: number };
   filename: string;
   exportOpen: boolean;
-  dirty: Set<number>; // segment ids needing recompute
+  dirty: Set<number>; // segment ids needing k-means recompute
   forceRecompute: Set<number>; // subset of dirty — bypass cache
+  smoothDirty: Set<number>; // segment ids needing smoothing re-applied (no k-means rerun)
   resegmentPending: boolean; // triggers Canvas to re-run buildAutoSegments
   autoSegmentCount: number; // how many top-level segments buildAutoSegments produces
   history: SnapshotState[];
@@ -65,6 +66,7 @@ export type ProjectAction =
   | { type: 'SET_EXPORT_OPEN'; open: boolean }
   | { type: 'MARK_DIRTY'; segmentId: number }
   | { type: 'CLEAR_DIRTY'; segmentId: number }
+  | { type: 'CLEAR_SMOOTH_DIRTY'; segmentId: number }
   | { type: 'FORCE_RECOMPUTE'; segmentId: number }
   | { type: 'REQUEST_RESEGMENT' }
   | { type: 'APPLY_RESEGMENT'; segments: Segment[]; clusteredMaps: Map<number, ClusteredMap> }
@@ -95,6 +97,7 @@ function createInitialState(): ProjectState {
     exportOpen: false,
     dirty: new Set(),
     forceRecompute: new Set(),
+    smoothDirty: new Set(),
     resegmentPending: false,
     autoSegmentCount: 3,
     history: [],
@@ -188,6 +191,7 @@ export class ProjectStore {
           contourPaths: new Map(),
           dirty: new Set(),
           forceRecompute: new Set(),
+          smoothDirty: new Set(),
           resegmentPending: false,
           pendingPoints: [],
           pendingMask: null,
@@ -245,6 +249,10 @@ export class ProjectStore {
           action.updates.colorSettings !== undefined &&
           prevSeg !== undefined &&
           JSON.stringify(action.updates.colorSettings) !== JSON.stringify(prevSeg.colorSettings);
+        const smoothingChanged =
+          action.updates.smoothing !== undefined &&
+          prevSeg !== undefined &&
+          action.updates.smoothing !== prevSeg.smoothing;
         this.state = {
           ...this.state,
           segments: this.state.segments.map(s =>
@@ -253,6 +261,9 @@ export class ProjectStore {
           dirty: colorSettingsChanged
             ? new Set([...this.state.dirty, action.segmentId])
             : this.state.dirty,
+          smoothDirty: smoothingChanged
+            ? new Set([...this.state.smoothDirty, action.segmentId])
+            : this.state.smoothDirty,
         };
         break;
       }
@@ -348,6 +359,13 @@ export class ProjectStore {
         break;
       }
 
+      case 'CLEAR_SMOOTH_DIRTY': {
+        const newSmoothDirty = new Set(this.state.smoothDirty);
+        newSmoothDirty.delete(action.segmentId);
+        this.state = { ...this.state, smoothDirty: newSmoothDirty };
+        break;
+      }
+
       case 'FORCE_RECOMPUTE': {
         const newDirty = new Set(this.state.dirty);
         newDirty.add(action.segmentId);
@@ -371,6 +389,7 @@ export class ProjectStore {
           contourPaths: new Map(),
           dirty: new Set(),
           forceRecompute: new Set(),
+          smoothDirty: new Set(),
           selectedSegmentId: action.segments[0]?.id ?? null,
           resegmentPending: false,
         };
