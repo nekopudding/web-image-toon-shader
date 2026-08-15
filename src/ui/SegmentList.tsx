@@ -7,16 +7,7 @@ const TINT_COLORS = [
   '#3dc3d6', '#9ed63d', '#d69e3d', '#5d3dd6',
 ];
 
-function getSegmentColor(segmentId: number, cm: ClusteredMap | undefined): string {
-  if (cm && cm.clusters.length > 0) {
-    // Prefer the base tone (lightnessRank 1), fall back to rank 0, then first cluster
-    const base = cm.clusters.find(c => c.lightnessRank === 1)
-      ?? cm.clusters.find(c => c.lightnessRank === 0)
-      ?? cm.clusters[0];
-    if (base.manualColor) return base.manualColor;
-    const [r, g, b] = base.rgbColor;
-    return `#${[r, g, b].map(v => Math.max(0, Math.min(255, isNaN(v) ? 0 : Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
-  }
+function getSegmentColor(segmentId: number): string {
   return TINT_COLORS[segmentId % TINT_COLORS.length];
 }
 
@@ -27,7 +18,6 @@ function getToneCount(segment: Segment, clusteredMaps: Map<number, ClusteredMap>
 
 interface SegmentRowProps {
   segment: Segment;
-  clusteredMap: ClusteredMap | undefined;
   isSelected: boolean;
   isChild: boolean;
   toneCount: number;
@@ -37,7 +27,6 @@ interface SegmentRowProps {
 
 function SegmentRow({
   segment,
-  clusteredMap,
   isSelected,
   isChild,
   toneCount,
@@ -76,7 +65,7 @@ function SegmentRow({
           width: 12,
           height: 12,
           borderRadius: 3,
-          background: getSegmentColor(segment.id, clusteredMap),
+          background: getSegmentColor(segment.id),
           flexShrink: 0,
         }}
       />
@@ -174,6 +163,7 @@ export function SegmentList(): React.ReactElement {
           paddingRight: 8,
           borderBottom: '1px solid #e2dfda',
           flexShrink: 0,
+          gap: 6,
         }}
       >
         <span
@@ -187,6 +177,99 @@ export function SegmentList(): React.ReactElement {
         >
           SEGMENTS
         </span>
+        {state.segments.length > 0 && (
+          <>
+            {/* Segment count stepper — disabled while resegmenting */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 2,
+              flexShrink: 0,
+              opacity: state.resegmentPending ? 0.4 : 1,
+              pointerEvents: state.resegmentPending ? 'none' : undefined,
+            }}>
+              <button
+                onClick={() => dispatch({ type: 'SET_AUTO_SEGMENT_COUNT', count: state.autoSegmentCount - 1 })}
+                disabled={state.autoSegmentCount <= 1}
+                title="Fewer segments"
+                style={{
+                  width: 18,
+                  height: 18,
+                  border: '1px solid #e2dfda',
+                  background: 'none',
+                  borderRadius: 3,
+                  cursor: state.autoSegmentCount <= 1 ? 'default' : 'pointer',
+                  color: state.autoSegmentCount <= 1 ? '#c0bcb7' : '#6f6b65',
+                  fontSize: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 0,
+                  lineHeight: 1,
+                }}
+              >
+                −
+              </button>
+              <span
+                title="Number of segments to generate on resegment"
+                style={{
+                  fontSize: 11,
+                  fontFamily: 'ui-monospace, Menlo, monospace',
+                  color: '#6f6b65',
+                  minWidth: 16,
+                  flexShrink: 0,
+                  textAlign: 'center',
+                }}
+              >
+                {state.autoSegmentCount}
+              </span>
+              <button
+                onClick={() => dispatch({ type: 'SET_AUTO_SEGMENT_COUNT', count: state.autoSegmentCount + 1 })}
+                disabled={state.autoSegmentCount >= 10}
+                title="More segments"
+                style={{
+                  width: 18,
+                  height: 18,
+                  border: '1px solid #e2dfda',
+                  background: 'none',
+                  borderRadius: 3,
+                  cursor: state.autoSegmentCount >= 10 ? 'default' : 'pointer',
+                  color: state.autoSegmentCount >= 10 ? '#c0bcb7' : '#6f6b65',
+                  fontSize: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 0,
+                  lineHeight: 1,
+                }}
+              >
+                +
+              </button>
+            </div>
+
+            <button
+              onClick={() => dispatch({ type: 'REQUEST_RESEGMENT' })}
+              disabled={state.resegmentPending}
+              title="Re-run auto-segmentation to update segment areas. Does not recompute palettes."
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: state.resegmentPending ? '#a9a49c' : '#6f6b65',
+                background: state.resegmentPending ? '#f8f7f5' : 'none',
+                border: '1px solid #e2dfda',
+                borderRadius: 4,
+                padding: '2px 7px',
+                cursor: state.resegmentPending ? 'default' : 'pointer',
+                letterSpacing: '0.04em',
+                flexShrink: 0,
+              }}
+              onMouseEnter={e => { if (!state.resegmentPending) e.currentTarget.style.background = '#f1efec'; }}
+              onMouseLeave={e => { if (!state.resegmentPending) e.currentTarget.style.background = 'none'; }}
+            >
+              {state.resegmentPending ? 'segmenting…' : 'resegment'}
+            </button>
+          </>
+        )}
       </div>
 
       {/* Segment list */}
@@ -248,7 +331,7 @@ export function SegmentList(): React.ReactElement {
                   <div style={{ flex: 1, paddingLeft: children.length === 0 ? 0 : 0 }}>
                     <SegmentRow
                       segment={segment}
-                      clusteredMap={state.clusteredMaps.get(segment.id)}
+
                       isSelected={state.selectedSegmentId === segment.id}
                       isChild={false}
                       toneCount={getToneCount(segment, state.clusteredMaps)}
@@ -269,7 +352,6 @@ export function SegmentList(): React.ReactElement {
                     <SegmentRow
                       key={child.id}
                       segment={child}
-                      clusteredMap={state.clusteredMaps.get(child.id)}
                       isSelected={state.selectedSegmentId === child.id}
                       isChild={true}
                       toneCount={getToneCount(child, state.clusteredMaps)}

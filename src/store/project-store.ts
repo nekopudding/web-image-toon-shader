@@ -25,6 +25,8 @@ export interface ProjectState {
   exportOpen: boolean;
   dirty: Set<number>; // segment ids needing recompute
   forceRecompute: Set<number>; // subset of dirty — bypass cache
+  resegmentPending: boolean; // triggers Canvas to re-run buildAutoSegments
+  autoSegmentCount: number; // how many top-level segments buildAutoSegments produces
   history: SnapshotState[];
   historyIndex: number;
   canvasContainerSize: { w: number; h: number } | null;
@@ -64,6 +66,9 @@ export type ProjectAction =
   | { type: 'MARK_DIRTY'; segmentId: number }
   | { type: 'CLEAR_DIRTY'; segmentId: number }
   | { type: 'FORCE_RECOMPUTE'; segmentId: number }
+  | { type: 'REQUEST_RESEGMENT' }
+  | { type: 'APPLY_RESEGMENT'; segments: Segment[]; clusteredMaps: Map<number, ClusteredMap> }
+  | { type: 'SET_AUTO_SEGMENT_COUNT'; count: number }
   | { type: 'SET_CONTAINER_SIZE'; w: number; h: number }
   | { type: 'REQUEST_MERGE'; fromId: number; toId: number }
   | { type: 'CLEAR_MERGE_PENDING' }
@@ -90,6 +95,8 @@ function createInitialState(): ProjectState {
     exportOpen: false,
     dirty: new Set(),
     forceRecompute: new Set(),
+    resegmentPending: false,
+    autoSegmentCount: 3,
     history: [],
     historyIndex: -1,
     canvasContainerSize: null,
@@ -181,6 +188,7 @@ export class ProjectStore {
           contourPaths: new Map(),
           dirty: new Set(),
           forceRecompute: new Set(),
+          resegmentPending: false,
           pendingPoints: [],
           pendingMask: null,
         };
@@ -346,6 +354,31 @@ export class ProjectStore {
         const newForce = new Set(this.state.forceRecompute);
         newForce.add(action.segmentId);
         this.state = { ...this.state, dirty: newDirty, forceRecompute: newForce };
+        break;
+      }
+
+      case 'REQUEST_RESEGMENT': {
+        this.state = { ...this.state, resegmentPending: true };
+        break;
+      }
+
+      case 'APPLY_RESEGMENT': {
+        this.pushHistory();
+        this.state = {
+          ...this.state,
+          segments: action.segments,
+          clusteredMaps: action.clusteredMaps,
+          contourPaths: new Map(),
+          dirty: new Set(),
+          forceRecompute: new Set(),
+          selectedSegmentId: action.segments[0]?.id ?? null,
+          resegmentPending: false,
+        };
+        break;
+      }
+
+      case 'SET_AUTO_SEGMENT_COUNT': {
+        this.state = { ...this.state, autoSegmentCount: Math.max(1, Math.min(10, action.count)) };
         break;
       }
 

@@ -231,6 +231,8 @@ export function Canvas(): React.ReactElement {
   // time any single worker finishes and dispatches SET_CLUSTERED_MAP.
   const clusteredMapsRef = useRef(state.clusteredMaps);
   clusteredMapsRef.current = state.clusteredMaps;
+  const autoSegmentCountRef = useRef(state.autoSegmentCount);
+  autoSegmentCountRef.current = state.autoSegmentCount;
 
   // Keep refs in sync with latest zoom/pan so the wheel handler never goes stale.
   // Using refs avoids putting zoom/panOffset in the wheel effect's deps array,
@@ -435,6 +437,28 @@ export function Canvas(): React.ReactElement {
     }
   }, [state.dirty, state.forceRecompute, state.segments, state.sourceImage, dispatch]);
 
+  // Resegment effect: re-run buildAutoSegments when REQUEST_RESEGMENT is dispatched.
+  // Replaces all segments and their initial clusteredMaps but does NOT mark dirty,
+  // so existing per-segment palette computation is not re-triggered.
+  useEffect(() => {
+    if (!state.resegmentPending || !state.sourceImage) return;
+    // Reset the global pixel assignment map so buildAutoSegments starts clean
+    globalSegMap = new SegmentationMap(state.sourceImage.width, state.sourceImage.height);
+    // Clear quantize cache — old segment IDs are being replaced
+    quantizeCacheRef.current.clear();
+    // Terminate any in-flight workers from the old segments
+    for (const worker of quantizeWorkersRef.current.values()) worker.terminate();
+    quantizeWorkersRef.current.clear();
+
+    const { segments, clusteredMaps } = buildAutoSegments(state.sourceImage, globalSegMap, autoSegmentCountRef.current);
+    if (segments.length === 0) {
+      console.error('[AutoSegment] Resegment produced no clusters.');
+      dispatch({ type: 'APPLY_RESEGMENT', segments: [], clusteredMaps: new Map() });
+      return;
+    }
+    dispatch({ type: 'APPLY_RESEGMENT', segments, clusteredMaps });
+  }, [state.resegmentPending, state.sourceImage, dispatch]);
+
   // Merge effect: when mergePending is set, reassign pixels from fromId to toId
   useEffect(() => {
     const mp = state.mergePending;
@@ -484,7 +508,7 @@ export function Canvas(): React.ReactElement {
 
   const runAutoSegment = useCallback((image: SourceImage, segMap: SegmentationMap) => {
     try {
-      const { segments, clusteredMaps } = buildAutoSegments(image, segMap, 3);
+      const { segments, clusteredMaps } = buildAutoSegments(image, segMap, autoSegmentCountRef.current);
       if (segments.length === 0) {
         console.error('[AutoSegment] k-means produced no clusters — image may be empty or degenerate.');
         return;
