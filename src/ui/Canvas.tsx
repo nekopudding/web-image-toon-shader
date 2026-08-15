@@ -5,7 +5,7 @@ import { loadModel, computeEmbedding, clearSamSession } from '../engine/sam';
 import { SegmentationMap } from '../engine/segmentation-map';
 import { kmeans } from '../engine/quantize';
 import { rgbToLab, labToRgb } from '../engine/color-space';
-import type { SourceImage, Segment, BBox, Cluster, ClusteredMap } from '../engine/types';
+import type { SourceImage, Segment, BBox, Cluster, ClusteredMap, ContourPath } from '../engine/types';
 
 const CHECKER_STYLE: React.CSSProperties = {
   backgroundImage: `
@@ -222,6 +222,15 @@ export function Canvas(): React.ReactElement {
   // Tracks in-flight quantize workers by segmentId so we cancel stale runs
   // when settings change mid-computation (e.g. slider dragging).
   const quantizeWorkersRef = useRef<Map<number, Worker>>(new Map());
+  // Cache of completed quantizations keyed by segmentId → colorSettingsKey → result.
+  // Allows instant restore when the user returns to previously-computed settings.
+  // Cleared per-segment when the underlying pixel mask changes (merge, paint, new image).
+  const quantizeCacheRef = useRef<Map<number, Map<string, { map: ClusteredMap; contours: ContourPath[] }>>>(new Map());
+  // Ref mirror of clusteredMaps so the dirty effect can read lockedColors without
+  // taking clusteredMaps as a dep — which would restart all in-flight workers every
+  // time any single worker finishes and dispatches SET_CLUSTERED_MAP.
+  const clusteredMapsRef = useRef(state.clusteredMaps);
+  clusteredMapsRef.current = state.clusteredMaps;
 
   // Keep refs in sync with latest zoom/pan so the wheel handler never goes stale.
   // Using refs avoids putting zoom/panOffset in the wheel effect's deps array,
@@ -345,6 +354,8 @@ export function Canvas(): React.ReactElement {
 
   // Re-quantize any segment marked dirty (e.g. after tones slider change or auto-segment init).
   // Cancels any in-flight worker for the same segment so rapid slider changes don't pile up.
+  // Cache: if this exact colorSettings was computed before (and it's not a forced recompute),
+  // restore the cached result instantly instead of spawning a worker.
   useEffect(() => {
     if (!state.sourceImage || !globalSegMap || state.dirty.size === 0) return;
 
@@ -356,7 +367,24 @@ export function Canvas(): React.ReactElement {
       const segment = state.segments.find(s => s.id === segmentId);
       if (!segment) { dispatch({ type: 'CLEAR_DIRTY', segmentId }); continue; }
 
-      const cm = state.clusteredMaps.get(segmentId);
+      const cacheKey = `${segment.colorSettings.targetColorCount}:${segment.colorSettings.colorSpace}:${segment.colorSettings.smoothing}`;
+      const segCache = quantizeCacheRef.current.get(segmentId);
+
+      if (!state.forceRecompute.has(segmentId) && segCache?.has(cacheKey)) {
+        // Cache hit — restore immediately, no worker needed
+        const cached = segCache.get(cacheKey)!;
+        dispatch({ type: 'SET_CLUSTERED_MAP', segmentId, map: cached.map });
+        dispatch({ type: 'SET_CONTOUR_PATHS', segmentId, paths: cached.contours });
+        dispatch({ type: 'CLEAR_DIRTY', segmentId });
+        continue;
+      }
+
+      // Force recompute: drop the stale cache entry for this key so fresh result is stored
+      if (state.forceRecompute.has(segmentId)) {
+        segCache?.delete(cacheKey);
+      }
+
+      const cm = clusteredMapsRef.current.get(segmentId);
       const lockedColors: ([number, number, number] | null)[] = cm
         ? cm.clusters.map(c => c.locked ? c.rgbColor : null)
         : [];
@@ -370,11 +398,13 @@ export function Canvas(): React.ReactElement {
       worker.onmessage = (evt) => {
         quantizeWorkersRef.current.delete(segmentId);
         const { clusterIds, clusters, contours } = evt.data;
-        dispatch({
-          type: 'SET_CLUSTERED_MAP',
-          segmentId,
-          map: { segmentId, bbox: segment.boundingBox, clusterIds: new Uint8Array(clusterIds), clusters },
-        });
+        const newMap: ClusteredMap = { segmentId, bbox: segment.boundingBox, clusterIds: new Uint8Array(clusterIds), clusters };
+        // Store in cache for instant restore if user returns to this colorSettings
+        if (!quantizeCacheRef.current.has(segmentId)) {
+          quantizeCacheRef.current.set(segmentId, new Map());
+        }
+        quantizeCacheRef.current.get(segmentId)!.set(cacheKey, { map: newMap, contours });
+        dispatch({ type: 'SET_CLUSTERED_MAP', segmentId, map: newMap });
         dispatch({ type: 'SET_CONTOUR_PATHS', segmentId, paths: contours });
         dispatch({ type: 'CLEAR_DIRTY', segmentId });
         worker.terminate();
@@ -403,7 +433,7 @@ export function Canvas(): React.ReactElement {
         { transfer: [imgBuf, segBuf] },
       );
     }
-  }, [state.dirty, state.segments, state.sourceImage, state.clusteredMaps, dispatch]);
+  }, [state.dirty, state.forceRecompute, state.segments, state.sourceImage, dispatch]);
 
   // Merge effect: when mergePending is set, reassign pixels from fromId to toId
   useEffect(() => {
@@ -415,9 +445,14 @@ export function Canvas(): React.ReactElement {
       if (globalSegMap.ids[i] === fromId) globalSegMap.ids[i] = toId;
     }
 
+    // Pixel mask of toId changed — stale cache entries are invalid
+    quantizeCacheRef.current.delete(toId);
+    quantizeCacheRef.current.delete(fromId);
+
     const { bbox } = globalSegMap.pixelsForSegment(toId);
     dispatch({ type: 'UPDATE_SEGMENT', segmentId: toId, updates: { boundingBox: bbox } });
     dispatch({ type: 'DELETE_SEGMENT', segmentId: fromId });
+    dispatch({ type: 'MARK_DIRTY', segmentId: toId });
     dispatch({ type: 'CLEAR_MERGE_PENDING' });
   }, [state.mergePending, state.sourceImage, dispatch]);
 
@@ -473,6 +508,7 @@ export function Canvas(): React.ReactElement {
   const startEmbedding = useCallback(async (image: SourceImage, filename: string) => {
     globalSegMap = new SegmentationMap(image.width, image.height);
     clearSamSession();
+    quantizeCacheRef.current.clear();
 
     dispatch({ type: 'SET_IMAGE', image, filename });
     dispatch({ type: 'SET_ZOOM_AND_PAN', zoom: 1, panX: 0, panY: 0 });
@@ -652,11 +688,16 @@ export function Canvas(): React.ReactElement {
       const targetId = paintTarget as number;
       globalSegMap.paint(paintMask, targetId, fullBBox);
       const { bbox } = globalSegMap.pixelsForSegment(targetId);
+      // Pixel mask changed — stale cache is invalid
+      quantizeCacheRef.current.delete(targetId);
       dispatch({ type: 'UPDATE_SEGMENT', segmentId: targetId, updates: { boundingBox: bbox } });
+      dispatch({ type: 'MARK_DIRTY', segmentId: targetId });
       affected.delete(targetId);
     }
 
     for (const sid of affected) {
+      // These segments lost pixels — stale cache is invalid
+      quantizeCacheRef.current.delete(sid);
       dispatch({ type: 'MARK_DIRTY', segmentId: sid });
     }
     setPaintMask(null); paintMaskRef.current = null;

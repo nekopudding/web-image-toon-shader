@@ -505,7 +505,26 @@ export function PropertiesPanel(): React.ReactElement {
           <div style={sectionStyle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 8 }}>
               <span style={{ ...labelStyle, marginBottom: 0 }}>PALETTE</span>
-              <InfoTip text="The quantized colors for this segment, sorted lightest to darkest. Click a swatch to select it. Lock a color (🔒) to pin it during re-quantization so it won't move." />
+              <InfoTip text="The quantized colors for this segment, sorted lightest to darkest. Click a swatch to pick a custom color. Lock (🔒) pins a color during re-quantization." />
+              <button
+                onClick={() => dispatch({ type: 'FORCE_RECOMPUTE', segmentId: segment.id })}
+                disabled={isRecomputing}
+                title="Recompute colors from scratch, ignoring the cached result"
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 10,
+                  fontWeight: 600,
+                  color: isRecomputing ? '#c0bcb7' : '#6f6b65',
+                  background: 'none',
+                  border: '1px solid #e2dfda',
+                  borderRadius: 4,
+                  padding: '2px 7px',
+                  cursor: isRecomputing ? 'default' : 'pointer',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                recalculate
+              </button>
             </div>
             <div style={{ opacity: isRecomputing ? 0.4 : 1, transition: 'opacity 0.2s', pointerEvents: isRecomputing ? 'none' : undefined }}>
               <div style={{ display: 'flex', gap: 8 }}>

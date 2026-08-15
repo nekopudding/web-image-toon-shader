@@ -24,6 +24,7 @@ export interface ProjectState {
   filename: string;
   exportOpen: boolean;
   dirty: Set<number>; // segment ids needing recompute
+  forceRecompute: Set<number>; // subset of dirty — bypass cache
   history: SnapshotState[];
   historyIndex: number;
   canvasContainerSize: { w: number; h: number } | null;
@@ -62,6 +63,7 @@ export type ProjectAction =
   | { type: 'SET_EXPORT_OPEN'; open: boolean }
   | { type: 'MARK_DIRTY'; segmentId: number }
   | { type: 'CLEAR_DIRTY'; segmentId: number }
+  | { type: 'FORCE_RECOMPUTE'; segmentId: number }
   | { type: 'SET_CONTAINER_SIZE'; w: number; h: number }
   | { type: 'REQUEST_MERGE'; fromId: number; toId: number }
   | { type: 'CLEAR_MERGE_PENDING' }
@@ -87,6 +89,7 @@ function createInitialState(): ProjectState {
     filename: 'untitled',
     exportOpen: false,
     dirty: new Set(),
+    forceRecompute: new Set(),
     history: [],
     historyIndex: -1,
     canvasContainerSize: null,
@@ -177,6 +180,7 @@ export class ProjectStore {
           clusteredMaps: new Map(),
           contourPaths: new Map(),
           dirty: new Set(),
+          forceRecompute: new Set(),
           pendingPoints: [],
           pendingMask: null,
         };
@@ -228,12 +232,19 @@ export class ProjectStore {
 
       case 'UPDATE_SEGMENT': {
         this.pushHistory();
+        const prevSeg = this.state.segments.find(s => s.id === action.segmentId);
+        const colorSettingsChanged =
+          action.updates.colorSettings !== undefined &&
+          prevSeg !== undefined &&
+          JSON.stringify(action.updates.colorSettings) !== JSON.stringify(prevSeg.colorSettings);
         this.state = {
           ...this.state,
           segments: this.state.segments.map(s =>
             s.id === action.segmentId ? { ...s, ...action.updates } : s,
           ),
-          dirty: new Set([...this.state.dirty, action.segmentId]),
+          dirty: colorSettingsChanged
+            ? new Set([...this.state.dirty, action.segmentId])
+            : this.state.dirty,
         };
         break;
       }
@@ -323,7 +334,18 @@ export class ProjectStore {
       case 'CLEAR_DIRTY': {
         const newDirty = new Set(this.state.dirty);
         newDirty.delete(action.segmentId);
-        this.state = { ...this.state, dirty: newDirty };
+        const newForce = new Set(this.state.forceRecompute);
+        newForce.delete(action.segmentId);
+        this.state = { ...this.state, dirty: newDirty, forceRecompute: newForce };
+        break;
+      }
+
+      case 'FORCE_RECOMPUTE': {
+        const newDirty = new Set(this.state.dirty);
+        newDirty.add(action.segmentId);
+        const newForce = new Set(this.state.forceRecompute);
+        newForce.add(action.segmentId);
+        this.state = { ...this.state, dirty: newDirty, forceRecompute: newForce };
         break;
       }
 
