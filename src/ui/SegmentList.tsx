@@ -7,7 +7,16 @@ const TINT_COLORS = [
   '#3dc3d6', '#9ed63d', '#d69e3d', '#5d3dd6',
 ];
 
-function getSegmentColor(segmentId: number): string {
+function getSegmentColor(segmentId: number, cm: ClusteredMap | undefined): string {
+  if (cm && cm.clusters.length > 0) {
+    // Prefer the base tone (lightnessRank 1), fall back to rank 0, then first cluster
+    const base = cm.clusters.find(c => c.lightnessRank === 1)
+      ?? cm.clusters.find(c => c.lightnessRank === 0)
+      ?? cm.clusters[0];
+    if (base.manualColor) return base.manualColor;
+    const [r, g, b] = base.rgbColor;
+    return `#${[r, g, b].map(v => Math.max(0, Math.min(255, isNaN(v) ? 0 : Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
+  }
   return TINT_COLORS[segmentId % TINT_COLORS.length];
 }
 
@@ -18,6 +27,7 @@ function getToneCount(segment: Segment, clusteredMaps: Map<number, ClusteredMap>
 
 interface SegmentRowProps {
   segment: Segment;
+  clusteredMap: ClusteredMap | undefined;
   isSelected: boolean;
   isChild: boolean;
   toneCount: number;
@@ -27,6 +37,7 @@ interface SegmentRowProps {
 
 function SegmentRow({
   segment,
+  clusteredMap,
   isSelected,
   isChild,
   toneCount,
@@ -65,7 +76,7 @@ function SegmentRow({
           width: 12,
           height: 12,
           borderRadius: 3,
-          background: getSegmentColor(segment.id),
+          background: getSegmentColor(segment.id, clusteredMap),
           flexShrink: 0,
         }}
       />
@@ -237,6 +248,7 @@ export function SegmentList(): React.ReactElement {
                   <div style={{ flex: 1, paddingLeft: children.length === 0 ? 0 : 0 }}>
                     <SegmentRow
                       segment={segment}
+                      clusteredMap={state.clusteredMaps.get(segment.id)}
                       isSelected={state.selectedSegmentId === segment.id}
                       isChild={false}
                       toneCount={getToneCount(segment, state.clusteredMaps)}
@@ -257,6 +269,7 @@ export function SegmentList(): React.ReactElement {
                     <SegmentRow
                       key={child.id}
                       segment={child}
+                      clusteredMap={state.clusteredMaps.get(child.id)}
                       isSelected={state.selectedSegmentId === child.id}
                       isChild={true}
                       toneCount={getToneCount(child, state.clusteredMaps)}

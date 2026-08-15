@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useProjectStore } from './hooks/useProjectStore';
 import type { Cluster } from '../engine/types';
 
@@ -107,14 +107,40 @@ function ColorSwatch({
   isSelected,
   onClick,
   onLockToggle,
+  onColorChange,
+  onColorReset,
 }: {
   cluster: Cluster;
   isSelected: boolean;
   onClick: () => void;
   onLockToggle: () => void;
+  onColorChange: (hex: string) => void;
+  onColorReset: () => void;
 }): React.ReactElement {
-  const [r, g, b] = cluster.rgbColor;
-  const hexColor = cluster.manualColor ?? `rgb(${r},${g},${b})`;
+  const colorInputRef = useRef<HTMLInputElement>(null);
+  // Stable ref so the event listener never needs to be re-registered
+  const onColorChangeRef = useRef(onColorChange);
+  useEffect(() => { onColorChangeRef.current = onColorChange; });
+
+  const autoHex = `#${cluster.rgbColor
+    .map(v => Math.max(0, Math.min(255, isNaN(v) ? 0 : Math.round(v))).toString(16).padStart(2, '0'))
+    .join('')}`;
+  const displayHex = cluster.manualColor ?? autoHex;
+
+  // Keep the uncontrolled input in sync when displayHex changes externally (e.g. reset)
+  useEffect(() => {
+    if (colorInputRef.current) colorInputRef.current.value = displayHex;
+  }, [displayHex]);
+
+  // Listen to the native 'change' event, which fires only when the user commits
+  // (closes the picker), not on every drag tick like React's onChange / 'input' event.
+  useEffect(() => {
+    const input = colorInputRef.current;
+    if (!input) return;
+    const handler = (e: Event) => onColorChangeRef.current((e.target as HTMLInputElement).value);
+    input.addEventListener('change', handler);
+    return () => input.removeEventListener('change', handler);
+  }, []); // register once — handler stays current via onColorChangeRef
 
   const roleLabel =
     cluster.lightnessRank === 0
@@ -122,6 +148,11 @@ function ColorSwatch({
       : cluster.lightnessRank === 1
       ? 'Base'
       : 'Shadow';
+
+  const handleSwatchClick = () => {
+    onClick();
+    colorInputRef.current?.click();
+  };
 
   return (
     <div
@@ -142,15 +173,31 @@ function ColorSwatch({
         }}
       >
         <button
-          onClick={onClick}
+          onClick={handleSwatchClick}
+          title="Click to pick a custom color"
           style={{
             position: 'absolute',
             inset: 0,
             borderRadius: 8,
-            background: hexColor,
+            background: displayHex,
             border: isSelected ? '2px solid #3d6fd6' : '2px solid transparent',
             cursor: 'pointer',
             boxShadow: isSelected ? '0 0 0 2px #fff inset' : 'none',
+          }}
+        />
+        {/* Hidden color picker — triggered programmatically on swatch click.
+            Uncontrolled (defaultValue) to avoid React re-renders on every drag tick.
+            Synced via ref in useEffect; commits via native 'change' event only. */}
+        <input
+          ref={colorInputRef}
+          type="color"
+          defaultValue={displayHex}
+          style={{
+            position: 'absolute',
+            opacity: 0,
+            pointerEvents: 'none',
+            width: 0,
+            height: 0,
           }}
         />
         {/* Lock icon */}
@@ -176,6 +223,33 @@ function ColorSwatch({
         >
           {cluster.locked ? '🔒' : '🔓'}
         </button>
+        {/* Manual override indicator */}
+        {cluster.manualColor && (
+          <button
+            onClick={e => { e.stopPropagation(); onColorReset(); }}
+            title="Reset to auto color"
+            style={{
+              position: 'absolute',
+              bottom: 2,
+              left: 2,
+              width: 14,
+              height: 14,
+              border: 'none',
+              background: 'rgba(255,255,255,0.9)',
+              borderRadius: 3,
+              cursor: 'pointer',
+              fontSize: 9,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#2b2a28',
+              fontWeight: 700,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* Hex label */}
@@ -183,7 +257,7 @@ function ColorSwatch({
         style={{
           fontSize: 9,
           fontFamily: 'ui-monospace, Menlo, monospace',
-          color: '#8d8880',
+          color: cluster.manualColor ? '#3d6fd6' : '#8d8880',
           textAlign: 'center',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
@@ -191,10 +265,7 @@ function ColorSwatch({
           maxWidth: '100%',
         }}
       >
-        {cluster.manualColor ??
-          `#${cluster.rgbColor
-            .map(v => Math.max(0, Math.min(255, isNaN(v) ? 0 : Math.round(v))).toString(16).padStart(2, '0'))
-            .join('')}`}
+        {displayHex}
       </span>
 
       <span style={{ fontSize: 9, color: '#a9a49c', textAlign: 'center' }}>
@@ -453,6 +524,26 @@ export function PropertiesPanel(): React.ReactElement {
                       onLockToggle={() => {
                         const updatedClusters = cm.clusters.map(c =>
                           c.id === cluster.id ? { ...c, locked: !c.locked } : c,
+                        );
+                        dispatch({
+                          type: 'SET_CLUSTERED_MAP',
+                          segmentId: segment.id,
+                          map: { ...cm, clusters: updatedClusters },
+                        });
+                      }}
+                      onColorChange={(hex) => {
+                        const updatedClusters = cm.clusters.map(c =>
+                          c.id === cluster.id ? { ...c, manualColor: hex } : c,
+                        );
+                        dispatch({
+                          type: 'SET_CLUSTERED_MAP',
+                          segmentId: segment.id,
+                          map: { ...cm, clusters: updatedClusters },
+                        });
+                      }}
+                      onColorReset={() => {
+                        const updatedClusters = cm.clusters.map(c =>
+                          c.id === cluster.id ? { ...c, manualColor: undefined } : c,
                         );
                         dispatch({
                           type: 'SET_CLUSTERED_MAP',
